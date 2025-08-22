@@ -128,10 +128,126 @@ func handlerAgg(s *state, cmd command) error {
 	return nil
 }
 
+func handlerAddFeed(s *state, cmd command) error {
+	if len(cmd.Args) < 2 {
+		fmt.Println("Run command name url")
+		os.Exit(1)
+	}
+	user_name := s.cfg.CurrentUserName
+	user, err := s.db.GetUser(context.Background(), user_name)
+	if err != nil {
+		return err
+	}
+	name := cmd.Args[0]
+	url := cmd.Args[1]
+	feed, err := s.db.AddFeed(context.Background(),
+		database.AddFeedParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+			Name:      name,
+			Url:       url,
+			UserID:    user.ID,
+		},
+	)
+	_, err = s.db.CreateFeedFollow(context.Background(),
+		database.CreateFeedFollowParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+			UserID:    user.ID,
+			FeedID:    feed.ID,
+		},
+	)
+	printfeed(feed)
+	return nil
+}
+
+func handlerShowFeeds(s *state, cmd command) error {
+	users, err := s.db.GetUsers(context.Background())
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		user_id, err := s.db.GetUser(context.Background(), user)
+		feedList, err := s.db.GetFeeds(context.Background(), user_id.ID)
+		if err != nil {
+			fmt.Println("Nothing to show")
+			return err
+		}
+		for _, feed := range feedList {
+			if len(feedList) < 1 {
+				continue
+			} else {
+				fmt.Println(user)
+				fmt.Printf("Name: %s URL: %s\n", feed.Name, feed.Url)
+			}
+		}
+	}
+	return nil
+}
+
+func handlerFollow(s *state, cmd command) error {
+	if len(cmd.Args) < 1 {
+		fmt.Println("Include URL argument")
+		os.Exit(1)
+	}
+	url := cmd.Args[0]
+	user, err := s.db.GetUser(context.Background(), s.cfg.CurrentUserName)
+	if err != nil {
+		return err
+	}
+	feed, err := s.db.GetFeedsByUrl(context.Background(), url)
+	if err != nil {
+		return err
+	}
+	follow, err := s.db.CreateFeedFollow(context.Background(),
+		database.CreateFeedFollowParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+			UserID:    user.ID,
+			FeedID:    feed.ID,
+		},
+	)
+	fmt.Printf("%s is following %s\n", follow.UserName, follow.FeedName)
+
+	return nil
+}
+
+func handlerFollows(s *state, cmd command) error {
+	user, err := s.db.GetUser(context.Background(), s.cfg.CurrentUserName)
+	if err != nil {
+		return err
+	}
+	follows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
+	if err != nil {
+		return err
+	}
+	if len(follows) < 1 {
+		fmt.Println("You are not following anything")
+	} else {
+		fmt.Printf("%s is following:\n", user.Name)
+		for _, follow := range follows {
+			fmt.Println(follow.FeedName)
+		}
+	}
+	return nil
+}
+
 func printUser(user database.User) {
 	fmt.Printf(" * ID:        %v\n", user.ID)
 	fmt.Printf(" * Name:      %v\n", user.Name)
 	fmt.Printf(" * CreatedAt: %v\n", user.CreatedAt)
+}
+
+func printfeed(feed database.Feed) {
+	fmt.Printf(" * ID:        %v\n", feed.ID)
+	fmt.Printf(" * Name:      %v\n", feed.Name)
+	fmt.Printf(" * CreatedAt: %v\n", feed.CreatedAt)
+	fmt.Printf(" * UpdatedAt: %v\n", feed.UpdatedAt)
+	fmt.Printf(" * URL: %v\n", feed.Url)
+	fmt.Printf(" * UserID: %v\n", feed.UserID)
 }
 
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
