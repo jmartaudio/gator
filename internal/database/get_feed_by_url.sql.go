@@ -7,15 +7,27 @@ package database
 
 import (
 	"context"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 const getFeedsByUrl = `-- name: GetFeedsByUrl :one
 SELECT id, created_at, updated_at, name, url, user_id FROM feeds WHERE url = $1
 `
 
-func (q *Queries) GetFeedsByUrl(ctx context.Context, url string) (Feed, error) {
+type GetFeedsByUrlRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Name      string
+	Url       string
+	UserID    uuid.UUID
+}
+
+func (q *Queries) GetFeedsByUrl(ctx context.Context, url string) (GetFeedsByUrlRow, error) {
 	row := q.db.QueryRowContext(ctx, getFeedsByUrl, url)
-	var i Feed
+	var i GetFeedsByUrlRow
 	err := row.Scan(
 		&i.ID,
 		&i.CreatedAt,

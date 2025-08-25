@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmartaudio/gator/internal/config"
 	"github.com/jmartaudio/gator/internal/database"
+	"github.com/lib/pq"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 type state struct {
@@ -36,6 +41,16 @@ func (c *commands) run(s *state, cmd command) error {
 		return err
 	}
 	return nil
+}
+
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		user, err := s.db.GetUser(context.Background(), s.cfg.CurrentUserName)
+		if err != nil {
+			return err
+		}
+		return handler(s, cmd, user)
+	}
 }
 
 func (c *commands) register(name string, f func(*state, command) error) {
@@ -118,25 +133,24 @@ func handlerGetUsers(s *state, cmd command) error {
 }
 
 func handlerAgg(s *state, cmd command) error {
-	url := "https://www.wagslane.dev/index.xml"
-	feed, err := fetchFeed(context.Background(), url)
-	if err != nil {
-		fmt.Println("Could not fetch feed")
+	if len(cmd.Args) < 1 {
+		fmt.Println("Must provide a duration: 1s, 1m, 1h")
 		os.Exit(1)
 	}
-	fmt.Printf("Retrived XML: %v\n", feed)
-	return nil
+	time_between_reqs, err := time.ParseDuration(cmd.Args[0])
+	if err != nil {
+		return err
+	}
+	ticker := time.NewTicker(time_between_reqs)
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
 }
 
-func handlerAddFeed(s *state, cmd command) error {
+func handlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.Args) < 2 {
 		fmt.Println("Run command name url")
 		os.Exit(1)
-	}
-	user_name := s.cfg.CurrentUserName
-	user, err := s.db.GetUser(context.Background(), user_name)
-	if err != nil {
-		return err
 	}
 	name := cmd.Args[0]
 	url := cmd.Args[1]
@@ -150,6 +164,9 @@ func handlerAddFeed(s *state, cmd command) error {
 			UserID:    user.ID,
 		},
 	)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.CreateFeedFollow(context.Background(),
 		database.CreateFeedFollowParams{
 			ID:        uuid.New(),
@@ -159,6 +176,9 @@ func handlerAddFeed(s *state, cmd command) error {
 			FeedID:    feed.ID,
 		},
 	)
+	if err != nil {
+		return err
+	}
 	printfeed(feed)
 	return nil
 }
@@ -187,16 +207,13 @@ func handlerShowFeeds(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollow(s *state, cmd command) error {
+func handlerFollow(s *state, cmd command, user database.User) error {
 	if len(cmd.Args) < 1 {
 		fmt.Println("Include URL argument")
 		os.Exit(1)
 	}
 	url := cmd.Args[0]
-	user, err := s.db.GetUser(context.Background(), s.cfg.CurrentUserName)
-	if err != nil {
-		return err
-	}
+
 	feed, err := s.db.GetFeedsByUrl(context.Background(), url)
 	if err != nil {
 		return err
@@ -215,11 +232,7 @@ func handlerFollow(s *state, cmd command) error {
 	return nil
 }
 
-func handlerFollows(s *state, cmd command) error {
-	user, err := s.db.GetUser(context.Background(), s.cfg.CurrentUserName)
-	if err != nil {
-		return err
-	}
+func handlerFollows(s *state, cmd command, user database.User) error {
 	follows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
 	if err != nil {
 		return err
@@ -232,6 +245,60 @@ func handlerFollows(s *state, cmd command) error {
 			fmt.Println(follow.FeedName)
 		}
 	}
+	return nil
+}
+
+func handlerUnFollow(s *state, cmd command, user database.User) error {
+	if len(cmd.Args) < 1 {
+		fmt.Println("Please supply URL")
+		os.Exit(1)
+	}
+	url := cmd.Args[0]
+	feed, err := s.db.GetFeedsByUrl(context.Background(), url)
+	if err != nil {
+		return err
+	}
+	err = s.db.DeleteFeedFollow(context.Background(), database.DeleteFeedFollowParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	})
+	if err != nil {
+		return nil
+	}
+	fmt.Printf("%s is unfollowing %s\n", user.Name, feed.Name)
+
+	return nil
+}
+
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	var limit int32
+	limit = 2
+	if len(cmd.Args) > 0 {
+		argInt, err := strconv.ParseInt(cmd.Args[0], 10, 32)
+		if err != nil {
+			fmt.Println("Provide limit as an integer")
+		}
+		limit = int32(argInt)
+	}
+	feeds, err := s.db.GetFeeds(context.Background(), user.ID)
+	if err != nil {
+		return err
+	}
+	for _, feed := range feeds {
+		posts, err := s.db.GetPostForUser(context.Background(),
+			database.GetPostForUserParams{
+				FeedID: feed.ID,
+				Limit:  limit,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		for _, post := range posts {
+			printPost(post)
+		}
+	}
+
 	return nil
 }
 
@@ -248,6 +315,14 @@ func printfeed(feed database.Feed) {
 	fmt.Printf(" * UpdatedAt: %v\n", feed.UpdatedAt)
 	fmt.Printf(" * URL: %v\n", feed.Url)
 	fmt.Printf(" * UserID: %v\n", feed.UserID)
+}
+
+func printPost(post database.Post) {
+	p := bluemonday.StrictPolicy()
+	fmt.Printf(" * Title:        %v\n", p.Sanitize(post.Title.String))
+	fmt.Printf(" * Published at: %v\n", p.Sanitize(post.PublishedAt.String))
+	fmt.Printf(" * URL:          %v\n", p.Sanitize(post.Url))
+	fmt.Printf(" * Description:  %v\n", p.Sanitize(post.Description.String))
 }
 
 func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
@@ -284,4 +359,52 @@ func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
 	}
 
 	return &rss, nil
+}
+
+func scrapeFeeds(s *state) error {
+	currentTime := time.Now()
+	nullTime := sql.NullTime{Time: currentTime, Valid: true}
+
+	next, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return err
+	}
+	err = s.db.MarkFeedFetched(context.Background(),
+		database.MarkFeedFetchedParams{
+			UpdatedAt:     currentTime,
+			LastFetchedAt: nullTime,
+			ID:            next.ID,
+		},
+	)
+	feed, err := fetchFeed(context.Background(), next.Url)
+	if err != nil {
+		return err
+	}
+	for _, item := range feed.Channel.Item {
+		post, err := s.db.CreatePost(context.Background(),
+			database.CreatePostParams{
+				ID:          uuid.New(),
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+				Title:       sql.NullString{String: item.Title, Valid: true},
+				Url:         item.Link,
+				Description: sql.NullString{String: item.Description, Valid: true},
+				PublishedAt: sql.NullString{String: string(item.PubDate), Valid: true},
+				FeedID:      next.ID,
+			},
+		)
+		if err != nil {
+			if err, ok := err.(*pq.Error); ok {
+				if err.Code == "23505" {
+					continue
+				}
+			} else {
+				log.Println(err)
+				return err
+			}
+		}
+		fmt.Printf("New Post %s From %s\n", post.Title.String, next.Name)
+	}
+
+	return nil
 }
