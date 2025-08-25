@@ -31,12 +31,12 @@ To install
 - or go build to run it from the gator dir
 
 The commands
-- register "your_name" -- adds a user
-- login "your_name" -- changes the user
-- follow "name" "url" -- follows an RSS feed
-- unfollow "url" -- unfollows an RSS feed
-- browse "limit" browse x number of recent postes example "browse 10"
-- agg "time_interval" -- example "agg 5m" to fetch new posts every 5m
+- gator register "your_name" -- adds a user
+- gator login "your_name" -- changes the user
+- gator follow "name" "url" -- follows an RSS feed
+- gator unfollow "url" -- unfollows an RSS feed
+- gator browse "limit" browse x number of recent postes example "browse 10"
+- gator agg "time_interval" -- example "agg 5m" to fetch new posts every 5m
 
 leave agg running like a daemon in another terminal
 for continuous fetching
